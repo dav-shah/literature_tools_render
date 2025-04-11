@@ -5,7 +5,7 @@ router = APIRouter()
 ZOTERO_API = "https://api.zotero.org"
 
 @router.get("/collections")
-def get_collections(user_id: str = Query(...), api_key: str = Header(...)):
+def get_collections(user_id: str = Query(...), api_key: str = Query(...)):
     url = f"{ZOTERO_API}/users/{user_id}/collections"
     headers = {"Zotero-API-Key": api_key}
     response = requests.get(url, headers=headers)
