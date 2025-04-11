@@ -13,7 +13,7 @@ def get_collections(user_id: str = Query(...), api_key: str = Query(...)):
     return response.json()
 
 @router.get("/items")
-def get_items(user_id: str = Query(...), api_key: str = Header(...)):
+def get_items(user_id: str = Query(...), api_key: str = Query(...)):
     url = f"{ZOTERO_API}/users/{user_id}/items"
     headers = {"Zotero-API-Key": api_key}
     response = requests.get(url, headers=headers)
@@ -21,7 +21,7 @@ def get_items(user_id: str = Query(...), api_key: str = Header(...)):
     return response.json()
 
 @router.post("/add")
-def add_item(user_id: str = Query(...), api_key: str = Header(...), title: str = Query(...), 
+def add_item(user_id: str = Query(...), api_key: str = Query(...), title: str = Query(...), 
              authors: str = Query(...), publication_year: str = Query(...), 
              collection_name: str = Query("LitReviewGPT")):
     headers = {
