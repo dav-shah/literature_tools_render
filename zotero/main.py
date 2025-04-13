@@ -11,19 +11,27 @@ def get_collections(user_id: str = Query(...), api_key: str = Query(...)):
     url = f"{ZOTERO_API}/users/{user_id}/collections"
     headers = {"Zotero-API-Key": api_key}
     try:
-        logging.warning(f"Calling Zotero Collections at URL: {url}")
         response = requests.get(url, headers=headers)
         response.raise_for_status()
-        return response.json()
+        raw = response.json()
+
+        simplified = [
+            {
+                "name": col["data"]["name"],
+                "items": col["meta"]["numItems"],
+                "collection_key": col["data"]["key"]
+            }
+            for col in raw
+        ]
+        return simplified
+
     except requests.exceptions.HTTPError as http_err:
-        logging.error(f"HTTP error: {http_err}")
         return JSONResponse(status_code=response.status_code, content={
             "error": "Zotero API error",
             "status_code": response.status_code,
             "body": response.text
         })
     except Exception as err:
-        logging.error(f"Unexpected error: {err}")
         return JSONResponse(status_code=500, content={
             "error": "Unexpected server error",
             "message": str(err)
