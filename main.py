@@ -11,3 +11,7 @@ app = FastAPI(
 
 app.include_router(pubmed_router, prefix="/pubmed")
 app.include_router(zotero_router, prefix="/zotero")
+
+@app.get("/")
+def read_root():
+    return {"status": "OK", "message": "Literature Tools API is running"}
