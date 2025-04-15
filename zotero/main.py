@@ -1,71 +1,114 @@
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query
 import requests
-import logging
 
 router = APIRouter()
-ZOTERO_API = "https://api.zotero.org"
+
+ZOTERO_API_BASE = "https://api.zotero.org"
 
 @router.get("/collections")
-def get_collections(user_id: str = Query(...), api_key: str = Query(...)):
-    url = f"{ZOTERO_API}/users/{user_id}/collections"
+def get_collections(user_id: str, api_key: str):
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     headers = {"Zotero-API-Key": api_key}
-    logging.warning(f"Calling Zotero Collections with headers at URL: {url}")
     response = requests.get(url, headers=headers)
     response.raise_for_status()
-    return response.json()
+
+    collections = [
+        {
+            "name": c["data"]["name"],
+            "key": c["data"]["key"]
+        }
+        for c in response.json()
+    ]
+    return collections
 
 @router.get("/items")
-def get_items(user_id: str = Query(...), api_key: str = Query(...)):
-    url = f"{ZOTERO_API}/users/{user_id}/items"
+def get_items(user_id: str, api_key: str):
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
     headers = {"Zotero-API-Key": api_key}
-    logging.warning(f"Calling Zotero Items with headers at URL: {url}")
     response = requests.get(url, headers=headers)
     response.raise_for_status()
-    return response.json()
+
+    items = []
+    for item in response.json():
+        data = item["data"]
+        items.append({
+            "title": data.get("title"),
+            "authors": ", ".join(a.get("lastName", "") for a in data.get("creators", [])),
+            "publication_year": data.get("date", "")[:4],
+            "link": data.get("url", "")
+        })
+    return items
 
 @router.post("/create_collection")
-def create_collection(user_id: str = Query(...), api_key: str = Query(...), name: str = Query(...)):
-    url = f"{ZOTERO_API}/users/{user_id}/collections"
-    headers = {"Zotero-API-Key": api_key, "Content-Type": "application/json"}
-    payload = [{"name": name}]
-    logging.warning(f"Creating Zotero Collection: {name} using headers at {url}")
+def create_collection(user_id: str, api_key: str, name: str):
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "name": name
+    }
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
-    return response.json()
+
+    return {
+        "message": "Collection created successfully.",
+        "collection_name": name,
+        "collection_key": response.json()["successful"]["0"]["key"]
+    }
 
 @router.post("/add")
-def add_item(user_id: str = Query(...), api_key: str = Query(...), title: str = Query(...),
-             authors: str = Query(...), publication_year: str = Query(...),
-             collection_name: str = Query("LitReviewGPT")):
-    headers = {"Zotero-API-Key": api_key, "Content-Type": "application/json"}
-    collections_url = f"{ZOTERO_API}/users/{user_id}/collections"
-    logging.warning(f"Checking collections at: {collections_url}")
+def add_item(
+    user_id: str,
+    api_key: str,
+    title: str,
+    authors: str,
+    publication_year: str,
+    collection_name: str = "LitReviewGPT"
+):
+    # Find or create the collection
+    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    headers = {"Zotero-API-Key": api_key}
     collections_resp = requests.get(collections_url, headers=headers)
     collections_resp.raise_for_status()
-    collections = collections_resp.json()
 
+    collections = collections_resp.json()
     collection_key = None
     for c in collections:
-        if c['data']['name'].lower() == collection_name.lower():
-            collection_key = c['data']['key']
+        if c["data"]["name"] == collection_name:
+            collection_key = c["data"]["key"]
             break
 
     if not collection_key:
-        logging.warning(f"Creating new collection: {collection_name}")
-        create_resp = requests.post(collections_url, headers=headers, json=[{"name": collection_name}])
+        create_resp = requests.post(
+            collections_url,
+            headers={**headers, "Content-Type": "application/json"},
+            json={"name": collection_name}
+        )
         create_resp.raise_for_status()
-        collection_key = create_resp.json()['successful']['0']['key']
+        collection_key = create_resp.json()["successful"]["0"]["key"]
 
-    items_url = f"{ZOTERO_API}/users/{user_id}/items"
-    payload = [{
+    # Add the item
+    items_url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
+    item_payload = [{
         "itemType": "journalArticle",
         "title": title,
-        "creators": [{"creatorType": "author", "firstName": name.split()[0], "lastName": name.split()[-1]} for name in authors.split(",")],
+        "creators": [{"creatorType": "author", "lastName": name.strip(), "firstName": ""} for name in authors.split(",")],
         "date": publication_year,
         "collections": [collection_key]
     }]
-    logging.warning(f"Adding item '{title}' to collection key {collection_key} at URL: {items_url}")
-    response = requests.post(items_url, headers=headers, json=payload)
-    if response.status_code not in [200, 201, 204]:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-    return {"status": "success", "collection_key": collection_key, "item_response": response.json()}
+    item_resp = requests.post(
+        items_url,
+        headers={**headers, "Content-Type": "application/json"},
+        json=item_payload
+    )
+    item_resp.raise_for_status()
+
+    return {
+        "message": "Item added successfully.",
+        "title": title,
+        "authors": authors,
+        "publication_year": publication_year,
+        "collection": collection_name
+    }
