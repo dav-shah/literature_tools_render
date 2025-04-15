@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 import requests
+import xml.etree.ElementTree as ET
 
 router = APIRouter()
 
@@ -53,24 +54,60 @@ def get_summary(pmids: list[str] = Query(...)):
     return summaries
 
 @router.get("/fetch")
-def fetch_abstract(pmids: list[str] = Query(...)):
-    url = f"{PUBMED_EUTILS_BASE}/efetch.fcgi"
+def fetch_pubmed_details(pmids: list[str] = Query(...)):
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
         "db": "pubmed",
         "id": ",".join(pmids),
-        "retmode": "text",
-        "rettype": "abstract"
+        "retmode": "xml"
     }
     response = requests.get(url, params=params)
     response.raise_for_status()
 
-    # Split abstracts by PMID (assuming 1:1 return order)
-    abstracts_text = response.text.strip().split("\n\n")
+    root = ET.fromstring(response.content)
     results = []
-    for pmid, abstract in zip(pmids, abstracts_text):
+
+    for article in root.findall(".//PubmedArticle"):
+        pmid = article.findtext(".//PMID")
+        title = article.findtext(".//ArticleTitle")
+        abstract_parts = [
+            (elem.attrib.get("Label", "") + ": " if elem.attrib.get("Label") else "") +
+            (elem.text.strip() if elem.text else "")
+            for elem in article.findall(".//AbstractText")
+        ]
+        abstract = "\n".join(abstract_parts).strip()
+
+        journal = article.findtext(".//Journal/Title")
+        volume = article.findtext(".//JournalIssue/Volume")
+        issue = article.findtext(".//JournalIssue/Issue")
+        pages = article.findtext(".//Pagination/MedlinePgn")
+        pubdate = article.findtext(".//PubDate/Year") or article.findtext(".//PubDate/MedlineDate")
+
+        doi = None
+        for eid in article.findall(".//ELocationID"):
+            if eid.attrib.get("EIdType") == "doi":
+                doi = eid.text
+                break
+
+        authors = []
+        for author in article.findall(".//Author"):
+            last = author.findtext("LastName")
+            first = author.findtext("ForeName")
+            if last:
+                authors.append(f"{first} {last}".strip())
+
         results.append({
             "pmid": pmid,
-            "abstract": abstract.strip(),
+            "title": title,
+            "authors": authors,
+            "abstract": abstract,
+            "journal": journal,
+            "volume": volume,
+            "issue": issue,
+            "pages": pages,
+            "pubdate": pubdate,
+            "doi": doi,
             "link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
         })
+
     return results
