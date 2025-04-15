@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 import requests
+import xml.etree.ElementTree as ET
 
 router = APIRouter()
 
@@ -41,7 +42,7 @@ def get_items(user_id: str, api_key: str):
 
 @router.post("/create_collection")
 def create_collection(user_id: str, api_key: str, name: str):
-    url = f"https://api.zotero.org/users/{user_id}/collections"
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     headers = {
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": "3",
@@ -67,82 +68,12 @@ def create_collection(user_id: str, api_key: str, name: str):
     }
 
 @router.post("/add")
-def add_item(
-    user_id: str,
-    api_key: str,
-    title: str,
-    authors: str,
-    publication_year: str,
-    collection_name: str = "LitReviewGPT"
-):
-    # Step 1: Get collections to find or create the target collection
-    collections_url = f"https://api.zotero.org/users/{user_id}/collections"
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3"
-    }
-    collections_resp = requests.get(collections_url, headers=headers)
-    collections_resp.raise_for_status()
-
-    collections = collections_resp.json()
-    collection_key = None
-    for c in collections:
-        if c["data"]["name"] == collection_name:
-            collection_key = c["data"]["key"]
-            break
-
-    # Step 2: If not found, create the collection
-    if not collection_key:
-        create_resp = requests.post(
-            collections_url,
-            headers={**headers, "Content-Type": "application/json"},
-            json=[
-                {"data": {"name": collection_name}}
-            ]
-        )
-        create_resp.raise_for_status()
-        collection_key = list(create_resp.json()["successful"].values())[0]["key"]
-
-    # Step 3: Build the item payload
-    items_url = f"https://api.zotero.org/users/{user_id}/items"
-    item_payload = [
-        {
-            "data": {
-                "itemType": "journalArticle",
-                "title": title,
-                "creators": [
-                    {"creatorType": "author", "lastName": name.strip(), "firstName": ""}
-                    for name in authors.split(",")
-                ],
-                "date": publication_year,
-                "collections": [collection_key]
-            }
-        }
-    ]
-    item_resp = requests.post(
-        items_url,
-        headers={**headers, "Content-Type": "application/json"},
-        json=item_payload
-    )
-    item_resp.raise_for_status()
-
-    return {
-        "message": "Item added successfully.",
-        "title": title,
-        "authors": authors,
-        "publication_year": publication_year,
-        "collection": collection_name
-    }
-
-@router.post("/add")
 def add_pubmed_article(
     user_id: str,
     api_key: str,
     pmid: str,
     collection_name: str = "LitReviewGPT"
 ):
-    import xml.etree.ElementTree as ET
-
     # Step 1: Fetch article metadata from PubMed
     efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
@@ -189,7 +120,7 @@ def add_pubmed_article(
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": "3"
     }
-    collections_url = f"https://api.zotero.org/users/{user_id}/collections"
+    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     collections_resp = requests.get(collections_url, headers=headers)
     collections_resp.raise_for_status()
     collections = collections_resp.json()
@@ -223,7 +154,7 @@ def add_pubmed_article(
             }
         }
     ]
-    item_url = f"https://api.zotero.org/users/{user_id}/items"
+    item_url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
     item_resp = requests.post(
         item_url,
         headers={**headers, "Content-Type": "application/json"},
