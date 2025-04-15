@@ -75,9 +75,12 @@ def add_item(
     publication_year: str,
     collection_name: str = "LitReviewGPT"
 ):
-    # Find or create the collection
-    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
-    headers = {"Zotero-API-Key": api_key}
+    # Step 1: Get collections to find or create the target collection
+    collections_url = f"https://api.zotero.org/users/{user_id}/collections"
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3"
+    }
     collections_resp = requests.get(collections_url, headers=headers)
     collections_resp.raise_for_status()
 
@@ -88,24 +91,34 @@ def add_item(
             collection_key = c["data"]["key"]
             break
 
+    # Step 2: If not found, create the collection
     if not collection_key:
         create_resp = requests.post(
             collections_url,
             headers={**headers, "Content-Type": "application/json"},
-            json={"name": collection_name}
+            json=[
+                {"data": {"name": collection_name}}
+            ]
         )
         create_resp.raise_for_status()
-        collection_key = create_resp.json()["successful"]["0"]["key"]
+        collection_key = list(create_resp.json()["successful"].values())[0]["key"]
 
-    # Add the item
-    items_url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
-    item_payload = [{
-        "itemType": "journalArticle",
-        "title": title,
-        "creators": [{"creatorType": "author", "lastName": name.strip(), "firstName": ""} for name in authors.split(",")],
-        "date": publication_year,
-        "collections": [collection_key]
-    }]
+    # Step 3: Build the item payload
+    items_url = f"https://api.zotero.org/users/{user_id}/items"
+    item_payload = [
+        {
+            "data": {
+                "itemType": "journalArticle",
+                "title": title,
+                "creators": [
+                    {"creatorType": "author", "lastName": name.strip(), "firstName": ""}
+                    for name in authors.split(",")
+                ],
+                "date": publication_year,
+                "collections": [collection_key]
+            }
+        }
+    ]
     item_resp = requests.post(
         items_url,
         headers={**headers, "Content-Type": "application/json"},
