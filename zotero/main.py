@@ -41,21 +41,29 @@ def get_items(user_id: str, api_key: str):
 
 @router.post("/create_collection")
 def create_collection(user_id: str, api_key: str, name: str):
-    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    url = f"https://api.zotero.org/users/{user_id}/collections"
     headers = {
         "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3",
         "Content-Type": "application/json"
     }
-    payload = {
-        "name": name
-    }
+    payload = [
+        {
+            "data": {
+                "name": name
+            }
+        }
+    ]
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
+
+    result = response.json()
+    new_key = list(result.get("successful", {}).values())[0].get("key", "UNKNOWN")
 
     return {
         "message": "Collection created successfully.",
         "collection_name": name,
-        "collection_key": response.json()["successful"]["0"]["key"]
+        "collection_key": new_key
     }
 
 @router.post("/add")
