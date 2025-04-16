@@ -54,7 +54,7 @@ def get_items_by_collection(
             }
             for item in items_resp.json()
         ]
-    ]
+    }
 
 @router.get("/download_pdfs_from_collection")
 def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: str):
