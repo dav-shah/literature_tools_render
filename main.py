@@ -9,19 +9,67 @@ app = FastAPI(title="Literature Tools API", version="1.0.0")
 app.include_router(pubmed_router, prefix="/pubmed", tags=["PubMed"])
 app.include_router(zotero_router, prefix="/zotero", tags=["Zotero"])
 
-# Custom OpenAPI schema with 'servers' field
+# Custom OpenAPI schema with 'servers' field and patched response for extract_chunks
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
+
     openapi_schema = get_openapi(
         title=app.title,
         version=app.version,
         description="API to access PubMed and Zotero tools",
         routes=app.routes,
     )
+
     openapi_schema["servers"] = [
         {"url": "https://literature-tools-render.onrender.com"}
     ]
+
+    # Patch the extract_chunks_from_collection response schema
+    path = "/zotero/extract_chunks_from_collection"
+    method = "get"
+    if path in openapi_schema["paths"]:
+        openapi_schema["paths"][path][method]["responses"]["200"] = {
+            "description": "Returns full-text sections extracted from each PDF",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "collection_name": {"type": "string"},
+                            "results": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "key": {"type": "string"},
+                                        "sections": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                                "type": "array",
+                                                "items": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "skipped": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {"type": "string"},
+                                        "reason": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
