@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from io import BytesIO
 import fitz  # PyMuPDF
 import re
+import sys
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
