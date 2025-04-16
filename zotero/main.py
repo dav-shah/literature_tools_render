@@ -40,6 +40,48 @@ def get_items(user_id: str, api_key: str):
         })
     return items
 
+@router.get("/items_by_collection")
+def get_items_by_collection(
+    user_id: str,
+    api_key: str,
+    collection_name: str,
+    limit: int = 100,
+    start: int = 0
+):
+    # Step 1: Get the collection key
+    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    headers = {"Zotero-API-Key": api_key}
+    collections_resp = requests.get(collections_url, headers=headers)
+    collections_resp.raise_for_status()
+
+    collections = collections_resp.json()
+    collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
+    if not collection_key:
+        return {"error": f"Collection '{collection_name}' not found."}
+
+    # Step 2: Fetch items with pagination
+    items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
+    params = {"limit": limit, "start": start}
+    items_resp = requests.get(items_url, headers=headers, params=params)
+    items_resp.raise_for_status()
+
+    items_data = []
+    for item in items_resp.json():
+        data = item["data"]
+        items_data.append({
+            "title": data.get("title"),
+            "authors": ", ".join(a.get("lastName", "") for a in data.get("creators", [])),
+            "publication_year": data.get("date", "")[:4],
+            "link": data.get("url", "")
+        })
+
+    return {
+        "collection_name": collection_name,
+        "collection_key": collection_key,
+        "items_returned": len(items_data),
+        "items": items_data
+    }
+
 @router.post("/create_collection")
 def create_collection(user_id: str, api_key: str, name: str):
     url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
