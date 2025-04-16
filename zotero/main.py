@@ -114,35 +114,46 @@ from io import BytesIO
 
 @router.get("/pdf_download")
 def download_pdf_from_zotero(user_id: str, api_key: str, item_key: str):
+    from fastapi.responses import StreamingResponse
+    from io import BytesIO
+
     headers = {
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": "3"
     }
 
-    # Step 1: Find attached PDF
-    children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
-    children_resp = requests.get(children_url, headers=headers)
-    children_resp.raise_for_status()
+    # Step 1: Get item metadata to see if it's a parent or a PDF
+    item_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}"
+    item_resp = requests.get(item_url, headers=headers)
+    item_resp.raise_for_status()
+    item_data = item_resp.json()["data"]
 
-    attachment = next(
-        (c for c in children_resp.json()
-         if c.get("data", {}).get("itemType") == "attachment" and
-            c.get("data", {}).get("contentType") == "application/pdf"),
-        None
-    )
+    # If it's a PDF attachment, use it directly
+    if item_data["itemType"] == "attachment" and item_data["contentType"] == "application/pdf":
+        pdf_key = item_data["key"]
+    else:
+        # If it's a parent, find the PDF child
+        children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
+        children_resp = requests.get(children_url, headers=headers)
+        children_resp.raise_for_status()
+        children = children_resp.json()
+        pdf = next(
+            (c for c in children
+             if c.get("data", {}).get("itemType") == "attachment" and
+                c.get("data", {}).get("contentType") == "application/pdf"),
+            None
+        )
+        if not pdf:
+            return {"error": "No PDF attachment found."}
+        pdf_key = pdf["data"]["key"]
 
-    if not attachment:
-        return {"error": "No PDF attachment found."}
+    # Step 2: Download the PDF
+    file_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
+    file_resp = requests.get(file_url, headers=headers, stream=True)
+    if file_resp.status_code != 200:
+        return {"error": f"Failed to download PDF from Zotero. Status: {file_resp.status_code}"}
 
-    pdf_key = attachment["data"]["key"]
-
-    # Step 2: Download PDF
-    pdf_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
-    pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
-    if pdf_resp.status_code != 200:
-        return {"error": "Failed to fetch PDF. Is Zotero storage enabled and are you logged in?"}
-
-    return StreamingResponse(BytesIO(pdf_resp.content), media_type="application/pdf", headers={
+    return StreamingResponse(BytesIO(file_resp.content), media_type="application/pdf", headers={
         "Content-Disposition": f"inline; filename={pdf_key}.pdf"
     })
 
