@@ -149,6 +149,7 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         }
 
     except Exception as e:
+        print("ERROR in extract_chunks_from_collection:", str(e))
         return {
             "error": "Extraction failed",
             "detail": str(e)
