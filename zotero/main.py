@@ -5,13 +5,9 @@ import xml.etree.ElementTree as ET
 from io import BytesIO
 import fitz  # PyMuPDF
 import re
-import sys
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
-
-def log(msg):
-    print(msg, file=sys.stderr)
 
 @router.get("/collections")
 def get_collections(user_id: str, api_key: str):
@@ -61,7 +57,7 @@ def get_items_by_collection(
             for item in items_resp.json()
             if item["data"].get("itemType") not in ["attachment", "note", "link"]
         ]
-    }
+    ]
 
 @router.get("/extract_chunks_from_collection")
 def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
@@ -95,7 +91,6 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
                 continue
 
             item_key = item_data["key"]
-            log(f"Processing item: {item_data.get('title')} ({item_key})")
 
             try:
                 children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
@@ -112,19 +107,11 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
 
                 if pdf:
                     pdf_key = pdf["data"]["key"]
-                    log(f"Found PDF attachment: {pdf_key} for item {item_key}")
                     pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                     pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
                     if pdf_resp.status_code == 200:
                         doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
                         full_text = "\n".join(page.get_text() for page in doc)
-                        # TEMPORARY: return a raw text snippet for testing
-                        extracted_chunks.append({
-                            "title": item_data.get("title"),
-                            "key": item_key,
-                            "full_text_snippet": full_text[:2000]  # safely trimmed for plugin response limits
-                        })
-                        continue  # skip chunking logic for now
 
                         sections = {}
                         current_section = "Unknown"
@@ -143,21 +130,17 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
                         if buffer:
                             sections.setdefault(current_section, []).append(" ".join(buffer).strip())
 
-                        log(f"Extracted sections: {list(sections.keys())} from {item_key}")
                         extracted_chunks.append({
                             "title": item_data.get("title"),
                             "key": item_key,
                             "sections": sections
                         })
                     else:
-                        log(f"Failed to download PDF for {item_key}")
                         skipped.append({"key": item_key, "reason": "PDF download failed"})
                 else:
-                    log(f"No PDF attachment found for {item_key}")
                     skipped.append({"key": item_key, "reason": "No PDF attachment"})
 
             except Exception as e:
-                log(f"Error processing item {item_key}: {str(e)}")
                 skipped.append({"key": item_key, "reason": str(e)})
 
         return {
@@ -167,11 +150,40 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         }
 
     except Exception as e:
-        log(f"FATAL error in extract_chunks_from_collection: {str(e)}")
         return {
             "error": "Extraction failed",
             "detail": str(e)
         }
+
+@router.get("/debug_pdf_text")
+def debug_pdf_text(user_id: str, api_key: str, pdf_key: str):
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3"
+    }
+
+    try:
+        pdf_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
+        resp = requests.get(pdf_url, headers=headers, stream=True)
+        resp.raise_for_status()
+
+        doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
+        output = []
+
+        for i, page in enumerate(doc, start=1):
+            text = page.get_text().strip()
+            output.append({
+                "page": i,
+                "text_snippet": text[:1000] if text else "[No text found]"
+            })
+
+        return {
+            "page_count": len(doc),
+            "pages": output
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.post("/create_collection")
@@ -303,38 +315,3 @@ def add_pubmed_article(
         "doi": doi,
         "collection": collection_name
     }
-
-@router.get("/debug_pdf_text")
-def debug_pdf_text(user_id: str, api_key: str, pdf_key: str):
-    import fitz
-    from io import BytesIO
-
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3"
-    }
-
-    try:
-        # Download the PDF
-        pdf_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
-        resp = requests.get(pdf_url, headers=headers, stream=True)
-        resp.raise_for_status()
-
-        # Load PDF and extract text
-        doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
-        output = []
-
-        for i, page in enumerate(doc, start=1):
-            text = page.get_text().strip()
-            output.append({
-                "page": i,
-                "text_snippet": text[:1000] if text else "[No text found]"
-            })
-
-        return {
-            "page_count": len(doc),
-            "pages": output
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
