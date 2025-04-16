@@ -69,6 +69,7 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
 
         section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b", re.IGNORECASE)
 
+        log(f"Fetching collections for user_id={user_id}")
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -77,10 +78,13 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
+        log(f"Found collection key: {collection_key}")
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
         items = items_resp.json()
+
+        log(f"Fetched {len(items)} items from collection. Applying limit_items={limit_items}, start_index={start_index}")
 
         extracted_chunks = []
         skipped = []
@@ -91,6 +95,7 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
                 continue
 
             item_key = item_data["key"]
+            log(f"Processing item: {item_data.get('title')} ({item_key})")
 
             try:
                 children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
@@ -107,40 +112,28 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
 
                 if pdf:
                     pdf_key = pdf["data"]["key"]
+                    log(f"Found PDF attachment: {pdf_key} for item {item_key}")
                     pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                     pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
                     if pdf_resp.status_code == 200:
                         doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
                         full_text = "\n".join(page.get_text() for page in doc)
 
-                        sections = {}
-                        current_section = "Unknown"
-                        buffer = []
-
-                        for line in full_text.splitlines():
-                            match = section_pattern.match(line.strip())
-                            if match:
-                                if buffer:
-                                    sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-                                    buffer = []
-                                current_section = match.group(1).title()
-                            else:
-                                buffer.append(line)
-
-                        if buffer:
-                            sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-
+                        log(f"PDF has {doc.page_count} pages. Returning snippet from first page.")
                         extracted_chunks.append({
                             "title": item_data.get("title"),
                             "key": item_key,
-                            "sections": sections
+                            "full_text_snippet": full_text[:2000]  # safely trimmed for plugin response limits
                         })
                     else:
+                        log(f"Failed to download PDF for {item_key}")
                         skipped.append({"key": item_key, "reason": "PDF download failed"})
                 else:
+                    log(f"No PDF attachment found for {item_key}")
                     skipped.append({"key": item_key, "reason": "No PDF attachment"})
 
             except Exception as e:
+                log(f"Error processing item {item_key}: {str(e)}")
                 skipped.append({"key": item_key, "reason": str(e)})
 
         return {
@@ -150,11 +143,12 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         }
 
     except Exception as e:
+        log(f"FATAL error in extract_chunks_from_collection: {str(e)}")
         return {
             "error": "Extraction failed",
             "detail": str(e)
         }
-
+    
 @router.get("/debug_pdf_text")
 def debug_pdf_text(user_id: str, api_key: str, pdf_key: str):
     headers = {
