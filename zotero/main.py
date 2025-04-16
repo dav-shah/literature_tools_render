@@ -10,9 +10,6 @@ import sys
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
 
-def log(msg):
-    print(msg, file=sys.stderr)
-
 @router.get("/collections")
 def get_collections(user_id: str, api_key: str):
     headers = {"Zotero-API-Key": api_key}
@@ -61,7 +58,7 @@ def get_items_by_collection(
             for item in items_resp.json()
             if item["data"].get("itemType") not in ["attachment", "note", "link"]
         ]
-    }
+    ]
 
 @router.get("/extract_chunks_from_collection")
 def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
@@ -71,9 +68,8 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
             "Zotero-API-Version": "3"
         }
 
-        section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b", re.IGNORECASE)
+        section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\\b", re.IGNORECASE)
 
-        log(f"Fetching collections for user_id={user_id}")
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -82,13 +78,10 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
-        log(f"Found collection key: {collection_key}")
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
         items = items_resp.json()
-
-        log(f"Fetched {len(items)} items from collection. Applying limit_items={limit_items}, start_index={start_index}")
 
         extracted_chunks = []
         skipped = []
@@ -99,7 +92,6 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
                 continue
 
             item_key = item_data["key"]
-            log(f"Processing item: {item_data.get('title')} ({item_key})")
 
             try:
                 children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
@@ -116,28 +108,23 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
 
                 if pdf:
                     pdf_key = pdf["data"]["key"]
-                    log(f"Found PDF attachment: {pdf_key} for item {item_key}")
                     pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                     pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
                     if pdf_resp.status_code == 200:
                         doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
                         full_text = "\n".join(page.get_text() for page in doc)
 
-                        log(f"PDF has {doc.page_count} pages. Returning snippet from first page.")
                         extracted_chunks.append({
                             "title": item_data.get("title"),
                             "key": item_key,
-                            "full_text_snippet": full_text[:2000]  # safely trimmed for plugin response limits
+                            "full_text": full_text
                         })
                     else:
-                        log(f"Failed to download PDF for {item_key}")
                         skipped.append({"key": item_key, "reason": "PDF download failed"})
                 else:
-                    log(f"No PDF attachment found for {item_key}")
                     skipped.append({"key": item_key, "reason": "No PDF attachment"})
 
             except Exception as e:
-                log(f"Error processing item {item_key}: {str(e)}")
                 skipped.append({"key": item_key, "reason": str(e)})
 
         return {
@@ -147,41 +134,10 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         }
 
     except Exception as e:
-        log(f"FATAL error in extract_chunks_from_collection: {str(e)}")
         return {
             "error": "Extraction failed",
             "detail": str(e)
         }
-    
-@router.get("/debug_pdf_text")
-def debug_pdf_text(user_id: str, api_key: str, pdf_key: str):
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3"
-    }
-
-    try:
-        pdf_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
-        resp = requests.get(pdf_url, headers=headers, stream=True)
-        resp.raise_for_status()
-
-        doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
-        output = []
-
-        for i, page in enumerate(doc, start=1):
-            text = page.get_text().strip()
-            output.append({
-                "page": i,
-                "text_snippet": text[:1000] if text else "[No text found]"
-            })
-
-        return {
-            "page_count": len(doc),
-            "pages": output
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
 
 
 @router.post("/create_collection")
