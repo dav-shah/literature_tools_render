@@ -1,44 +1,23 @@
 from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 import requests
 import xml.etree.ElementTree as ET
+from io import BytesIO
 
 router = APIRouter()
-
 ZOTERO_API_BASE = "https://api.zotero.org"
 
 @router.get("/collections")
 def get_collections(user_id: str, api_key: str):
-    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     headers = {"Zotero-API-Key": api_key}
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     response = requests.get(url, headers=headers)
     response.raise_for_status()
 
-    collections = [
-        {
-            "name": c["data"]["name"],
-            "key": c["data"]["key"]
-        }
+    return [
+        {"name": c["data"]["name"], "key": c["data"]["key"]}
         for c in response.json()
     ]
-    return collections
-
-@router.get("/items")
-def get_items(user_id: str, api_key: str):
-    url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
-    headers = {"Zotero-API-Key": api_key}
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-
-    items = []
-    for item in response.json():
-        data = item["data"]
-        items.append({
-            "title": data.get("title"),
-            "authors": ", ".join(a.get("lastName", "") for a in data.get("creators", [])),
-            "publication_year": data.get("date", "")[:4],
-            "link": data.get("url", "")
-        })
-    return items
 
 @router.get("/items_by_collection")
 def get_items_by_collection(
@@ -48,38 +27,93 @@ def get_items_by_collection(
     limit: int = 100,
     start: int = 0
 ):
-    # Step 1: Get the collection key
-    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     headers = {"Zotero-API-Key": api_key}
+    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     collections_resp = requests.get(collections_url, headers=headers)
     collections_resp.raise_for_status()
-
     collections = collections_resp.json()
     collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
     if not collection_key:
         return {"error": f"Collection '{collection_name}' not found."}
 
-    # Step 2: Fetch items with pagination
     items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
     params = {"limit": limit, "start": start}
     items_resp = requests.get(items_url, headers=headers, params=params)
     items_resp.raise_for_status()
 
-    items_data = []
-    for item in items_resp.json():
-        data = item["data"]
-        items_data.append({
-            "title": data.get("title"),
-            "authors": ", ".join(a.get("lastName", "") for a in data.get("creators", [])),
-            "publication_year": data.get("date", "")[:4],
-            "link": data.get("url", "")
-        })
-
     return {
         "collection_name": collection_name,
         "collection_key": collection_key,
-        "items_returned": len(items_data),
-        "items": items_data
+        "items": [
+            {
+                "title": item["data"].get("title"),
+                "key": item["data"].get("key"),
+                "authors": ", ".join(a.get("lastName", "") for a in item["data"].get("creators", [])),
+                "publication_year": item["data"].get("date", "")[:4],
+                "link": item["data"].get("url", "")
+            }
+            for item in items_resp.json()
+        ]
+    ]
+
+@router.get("/download_pdfs_from_collection")
+def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: str):
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3"
+    }
+
+    # Step 1: Get collection key
+    collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    collections_resp = requests.get(collections_url, headers=headers)
+    collections_resp.raise_for_status()
+    collections = collections_resp.json()
+    collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
+    if not collection_key:
+        return {"error": f"Collection '{collection_name}' not found."}
+
+    # Step 2: Get all items in the collection
+    items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
+    items_resp = requests.get(items_url, headers=headers)
+    items_resp.raise_for_status()
+    items = items_resp.json()
+
+    downloaded = []
+    skipped = []
+
+    for item in items:
+        item_key = item["data"]["key"]
+        try:
+            children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
+            children_resp = requests.get(children_url, headers=headers)
+            children_resp.raise_for_status()
+            children = children_resp.json()
+
+            pdf = next(
+                (c for c in children
+                 if c.get("data", {}).get("itemType") == "attachment" and
+                    c.get("data", {}).get("contentType") == "application/pdf"),
+                None
+            )
+
+            if pdf:
+                pdf_key = pdf["data"]["key"]
+                pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
+                pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
+                if pdf_resp.status_code == 200:
+                    downloaded.append({"title": item["data"].get("title"), "key": item_key, "pdf_key": pdf_key})
+                else:
+                    skipped.append({"key": item_key, "reason": "PDF download failed"})
+            else:
+                skipped.append({"key": item_key, "reason": "No PDF attachment"})
+
+        except Exception as e:
+            skipped.append({"key": item_key, "reason": str(e)})
+
+    return {
+        "collection_name": collection_name,
+        "downloaded": downloaded,
+        "skipped": skipped
     }
 
 @router.post("/create_collection")
@@ -108,54 +142,6 @@ def create_collection(user_id: str, api_key: str, name: str):
         "collection_name": name,
         "collection_key": new_key
     }
-
-from fastapi.responses import StreamingResponse
-from io import BytesIO
-
-@router.get("/pdf_download")
-def download_pdf_from_zotero(user_id: str, api_key: str, item_key: str):
-    from fastapi.responses import StreamingResponse
-    from io import BytesIO
-
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3"
-    }
-
-    # Step 1: Get item metadata to see if it's a parent or a PDF
-    item_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}"
-    item_resp = requests.get(item_url, headers=headers)
-    item_resp.raise_for_status()
-    item_data = item_resp.json()["data"]
-
-    # If it's a PDF attachment, use it directly
-    if item_data["itemType"] == "attachment" and item_data["contentType"] == "application/pdf":
-        pdf_key = item_data["key"]
-    else:
-        # If it's a parent, find the PDF child
-        children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
-        children_resp = requests.get(children_url, headers=headers)
-        children_resp.raise_for_status()
-        children = children_resp.json()
-        pdf = next(
-            (c for c in children
-             if c.get("data", {}).get("itemType") == "attachment" and
-                c.get("data", {}).get("contentType") == "application/pdf"),
-            None
-        )
-        if not pdf:
-            return {"error": "No PDF attachment found."}
-        pdf_key = pdf["data"]["key"]
-
-    # Step 2: Download the PDF
-    file_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
-    file_resp = requests.get(file_url, headers=headers, stream=True)
-    if file_resp.status_code != 200:
-        return {"error": f"Failed to download PDF from Zotero. Status: {file_resp.status_code}"}
-
-    return StreamingResponse(BytesIO(file_resp.content), media_type="application/pdf", headers={
-        "Content-Disposition": f"inline; filename={pdf_key}.pdf"
-    })
 
 @router.post("/add")
 def add_pubmed_article(
