@@ -64,7 +64,7 @@ def get_items_by_collection(
     }
 
 @router.get("/extract_chunks_from_collection")
-def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str):
+def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
     try:
         headers = {
             "Zotero-API-Key": api_key,
@@ -89,7 +89,7 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         extracted_chunks = []
         skipped = []
 
-        for item in items:
+        for item in items[start_index:start_index + limit_items]:
             item_data = item["data"]
             if item_data.get("itemType") in ["attachment", "note", "link"]:
                 continue
