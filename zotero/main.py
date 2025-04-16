@@ -57,7 +57,7 @@ def get_items_by_collection(
             for item in items_resp.json()
             if item["data"].get("itemType") not in ["attachment", "note", "link"]
         ]
-    ]
+    }
 
 @router.get("/extract_chunks_from_collection")
 def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
