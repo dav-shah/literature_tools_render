@@ -296,3 +296,38 @@ def add_pubmed_article(
         "doi": doi,
         "collection": collection_name
     }
+
+@router.get("/debug_pdf_text")
+def debug_pdf_text(user_id: str, api_key: str, pdf_key: str):
+    import fitz
+    from io import BytesIO
+
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3"
+    }
+
+    try:
+        # Download the PDF
+        pdf_url = f"https://api.zotero.org/users/{user_id}/items/{pdf_key}/file"
+        resp = requests.get(pdf_url, headers=headers, stream=True)
+        resp.raise_for_status()
+
+        # Load PDF and extract text
+        doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
+        output = []
+
+        for i, page in enumerate(doc, start=1):
+            text = page.get_text().strip()
+            output.append({
+                "page": i,
+                "text_snippet": text[:1000] if text else "[No text found]"
+            })
+
+        return {
+            "page_count": len(doc),
+            "pages": output
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
