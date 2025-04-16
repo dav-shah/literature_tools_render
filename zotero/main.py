@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 import requests
 import xml.etree.ElementTree as ET
 from io import BytesIO
+import fitz  # PyMuPDF
+import re
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
@@ -53,17 +55,19 @@ def get_items_by_collection(
                 "link": item["data"].get("url", "")
             }
             for item in items_resp.json()
+            if item["data"].get("itemType") not in ["attachment", "note", "link"]
         ]
     }
 
-@router.get("/download_pdfs_from_collection")
-def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: str):
+@router.get("/extract_chunks_from_collection")
+def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str):
     headers = {
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": "3"
     }
 
-    # Step 1: Get collection key
+    section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b", re.IGNORECASE)
+
     collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
     collections_resp = requests.get(collections_url, headers=headers)
     collections_resp.raise_for_status()
@@ -72,17 +76,20 @@ def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: s
     if not collection_key:
         return {"error": f"Collection '{collection_name}' not found."}
 
-    # Step 2: Get all items in the collection
     items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
     items_resp = requests.get(items_url, headers=headers)
     items_resp.raise_for_status()
     items = items_resp.json()
 
-    downloaded = []
+    extracted_chunks = []
     skipped = []
 
     for item in items:
-        item_key = item["data"]["key"]
+        item_data = item["data"]
+        if item_data.get("itemType") in ["attachment", "note", "link"]:
+            continue
+
+        item_key = item_data["key"]
         try:
             children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
             children_resp = requests.get(children_url, headers=headers)
@@ -101,7 +108,31 @@ def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: s
                 pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                 pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
                 if pdf_resp.status_code == 200:
-                    downloaded.append({"title": item["data"].get("title"), "key": item_key, "pdf_key": pdf_key})
+                    doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
+                    full_text = "\n".join(page.get_text() for page in doc)
+
+                    # Section-aware splitting
+                    sections = {}
+                    current_section = "Unknown"
+                    buffer = []
+
+                    for line in full_text.splitlines():
+                        if section_pattern.match(line.strip()):
+                            if buffer:
+                                sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+                                buffer = []
+                            current_section = section_pattern.match(line.strip()).group(1).title()
+                        else:
+                            buffer.append(line)
+
+                    if buffer:
+                        sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+
+                    extracted_chunks.append({
+                        "title": item_data.get("title"),
+                        "key": item_key,
+                        "sections": sections
+                    })
                 else:
                     skipped.append({"key": item_key, "reason": "PDF download failed"})
             else:
@@ -112,9 +143,10 @@ def download_pdfs_from_collection(user_id: str, api_key: str, collection_name: s
 
     return {
         "collection_name": collection_name,
-        "downloaded": downloaded,
+        "results": extracted_chunks,
         "skipped": skipped
     }
+
 
 @router.post("/create_collection")
 def create_collection(user_id: str, api_key: str, name: str):
