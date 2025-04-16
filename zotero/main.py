@@ -5,9 +5,13 @@ import xml.etree.ElementTree as ET
 from io import BytesIO
 import fitz  # PyMuPDF
 import re
+import sys
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
+
+def log(msg):
+    print(msg, file=sys.stderr)
 
 @router.get("/collections")
 def get_collections(user_id: str, api_key: str):
@@ -66,9 +70,9 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
             "Zotero-API-Key": api_key,
             "Zotero-API-Version": "3"
         }
-    
+
         section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b", re.IGNORECASE)
-    
+
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -76,80 +80,87 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
-    
+
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
         items = items_resp.json()
-    
+
         extracted_chunks = []
         skipped = []
-    
+
         for item in items:
             item_data = item["data"]
             if item_data.get("itemType") in ["attachment", "note", "link"]:
                 continue
-    
+
             item_key = item_data["key"]
+            log(f"Processing item: {item_data.get('title')} ({item_key})")
+
             try:
                 children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
                 children_resp = requests.get(children_url, headers=headers)
                 children_resp.raise_for_status()
                 children = children_resp.json()
-    
+
                 pdf = next(
                     (c for c in children
                      if c.get("data", {}).get("itemType") == "attachment" and
                         c.get("data", {}).get("contentType") == "application/pdf"),
                     None
                 )
-    
+
                 if pdf:
                     pdf_key = pdf["data"]["key"]
+                    log(f"Found PDF attachment: {pdf_key} for item {item_key}")
                     pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                     pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
                     if pdf_resp.status_code == 200:
                         doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
                         full_text = "\n".join(page.get_text() for page in doc)
-    
-                        # Section-aware splitting
+
                         sections = {}
                         current_section = "Unknown"
                         buffer = []
-    
+
                         for line in full_text.splitlines():
-                            if section_pattern.match(line.strip()):
+                            match = section_pattern.match(line.strip())
+                            if match:
                                 if buffer:
                                     sections.setdefault(current_section, []).append(" ".join(buffer).strip())
                                     buffer = []
-                                current_section = section_pattern.match(line.strip()).group(1).title()
+                                current_section = match.group(1).title()
                             else:
                                 buffer.append(line)
-    
+
                         if buffer:
                             sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-    
+
+                        log(f"Extracted sections: {list(sections.keys())} from {item_key}")
                         extracted_chunks.append({
                             "title": item_data.get("title"),
                             "key": item_key,
                             "sections": sections
                         })
                     else:
+                        log(f"Failed to download PDF for {item_key}")
                         skipped.append({"key": item_key, "reason": "PDF download failed"})
                 else:
+                    log(f"No PDF attachment found for {item_key}")
                     skipped.append({"key": item_key, "reason": "No PDF attachment"})
-    
+
             except Exception as e:
+                log(f"Error processing item {item_key}: {str(e)}")
                 skipped.append({"key": item_key, "reason": str(e)})
-    
+
         return {
-                "collection_name": collection_name,
-                "results": extracted_chunks,
-                "skipped": skipped
+            "collection_name": collection_name,
+            "results": extracted_chunks,
+            "skipped": skipped
         }
 
     except Exception as e:
-        print("ERROR in extract_chunks_from_collection:", str(e))
+        log(f"FATAL error in extract_chunks_from_collection: {str(e)}")
         return {
             "error": "Extraction failed",
             "detail": str(e)
