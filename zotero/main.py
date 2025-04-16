@@ -9,6 +9,9 @@ import re
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
 
+def log(msg):
+    print(msg, file=sys.stderr)
+
 @router.get("/collections")
 def get_collections(user_id: str, api_key: str):
     headers = {"Zotero-API-Key": api_key}
