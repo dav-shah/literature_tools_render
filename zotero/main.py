@@ -118,6 +118,13 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
                     if pdf_resp.status_code == 200:
                         doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
                         full_text = "\n".join(page.get_text() for page in doc)
+                        # TEMPORARY: return a raw text snippet for testing
+                        extracted_chunks.append({
+                            "title": item_data.get("title"),
+                            "key": item_key,
+                            "full_text_snippet": full_text[:2000]  # safely trimmed for plugin response limits
+                        })
+                        continue  # skip chunking logic for now
 
                         sections = {}
                         current_section = "Unknown"
