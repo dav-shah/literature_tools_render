@@ -69,25 +69,31 @@ def get_items_by_collection(
         ]
     }
 
-def extract_sections(text: str):
-    sections = {}
-    current_section = "Unknown"
-    buffer = []
+SECTION_PATTERN = re.compile(
+    r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b",
+    re.IGNORECASE
+)
 
-    for line in text.splitlines():
-        match = SECTION_PATTERN.match(line.strip())
-        if match:
-            if buffer:
-                sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-                buffer = []
-            current_section = match.group(1).title()
-        else:
-            buffer.append(line)
+def get_zotero_collections(user_id: str, api_key: str):
+    headers = {"Zotero-API-Key": api_key}
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
-    if buffer:
-        sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+def get_zotero_items(user_id: str, api_key: str, collection_key: str):
+    headers = {"Zotero-API-Key": api_key}
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
-    return sections
+def get_children(user_id: str, api_key: str, item_key: str):
+    headers = {"Zotero-API-Key": api_key}
+    url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
 @router.get("/zotero/extract_chunks_from_collection")
 def extract_chunks_from_collection(
@@ -96,126 +102,76 @@ def extract_chunks_from_collection(
     collection_name: str,
     limit_items: int = 1,
     start_index: int = 0,
-    max_sections: Optional[int] = None,
-    start_section: int = 0
+    page_start: int = 1,
+    page_end: int = None
 ):
-    try:
-        headers = {"Zotero-API-Key": api_key, "Zotero-API-Version": "3"}
+    headers = {"Zotero-API-Key": api_key, "Zotero-API-Version": "3"}
 
-        # Fetch collection key
-        collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
-        collections_resp = requests.get(collections_url, headers=headers)
-        collections_resp.raise_for_status()
-        collections = collections_resp.json()
-        collection_key = next(
-            (c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None
-        )
-        if not collection_key:
-            return {"error": f"Collection '{collection_name}' not found."}
+    collections = get_zotero_collections(user_id, api_key)
+    collection_key = next(
+        (c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None
+    )
+    if not collection_key:
+        return {"error": f"Collection '{collection_name}' not found."}
 
-        # Fetch items
-        items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
-        items_resp = requests.get(items_url, headers=headers)
-        items_resp.raise_for_status()
-        all_items = items_resp.json()
-        parent_items = [
-            item for item in all_items
-            if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
-        ]
+    all_items = get_zotero_items(user_id, api_key, collection_key)
+    parent_items = [
+        item for item in all_items
+        if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
+    ]
 
-        selected_parents = parent_items[start_index:start_index + limit_items]
-        results = []
-        skipped = []
+    selected_parents = parent_items[start_index:start_index + limit_items]
+    results = []
+    skipped = []
 
-        for parent in selected_parents:
-            item_key = parent["data"]["key"]
-            item_title = parent["data"].get("title")
+    for parent in selected_parents:
+        item_key = parent["data"]["key"]
+        item_title = parent["data"].get("title")
 
-            try:
-                # Get children
-                children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
-                children_resp = requests.get(children_url, headers=headers)
-                children_resp.raise_for_status()
-                children = children_resp.json()
+        try:
+            children = get_children(user_id, api_key, item_key)
+            pdf = next((
+                c for c in children
+                if c.get("data", {}).get("itemType") == "attachment" and
+                   c.get("data", {}).get("contentType") == "application/pdf"
+            ), None)
 
-                # Find PDF attachment
-                pdf = next((
-                    c for c in children
-                    if c.get("data", {}).get("itemType") == "attachment" and
-                    c.get("data", {}).get("contentType") == "application/pdf"
-                ), None)
+            if not pdf:
+                skipped.append({"key": item_key, "title": item_title, "reason": "No PDF attachment"})
+                continue
 
-                if not pdf:
-                    skipped.append({
-                        "key": item_key,
-                        "title": item_title,
-                        "reason": "No PDF attachment",
-                        "children_types": [c["data"].get("itemType") for c in children]
-                    })
-                    continue
+            pdf_key = pdf["data"]["key"]
+            pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
+            resp = requests.get(pdf_url, headers=headers, stream=True)
+            resp.raise_for_status()
 
-                # Try downloading PDF
-                pdf_key = pdf["data"]["key"]
-                pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
-                pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
+            doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
+            page_count = len(doc)
 
-                if pdf_resp.status_code != 200:
-                    skipped.append({
-                        "key": item_key,
-                        "title": item_title,
-                        "reason": f"PDF download failed with status {pdf_resp.status_code}",
-                        "pdf_url": pdf_url
-                    })
-                    continue
+            # Clip page range to bounds
+            page_start_clamped = max(1, page_start)
+            page_end_clamped = min(page_end or page_count, page_count)
 
-                # Extract PDF content
-                doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
-                full_text = "\n".join(page.get_text() for page in doc)
+            full_text = "\n".join(
+                doc[i - 1].get_text() for i in range(page_start_clamped, page_end_clamped + 1)
+            )
 
-                # Parse sections
-                sections = {}
-                current_section = "Unknown"
-                buffer = []
+            results.append({
+                "title": item_title,
+                "key": item_key,
+                "page_count": page_count,
+                "page_range": [page_start_clamped, page_end_clamped],
+                "text": full_text
+            })
 
-                for line in full_text.splitlines():
-                    match = SECTION_PATTERN.match(line.strip())
-                    if match:
-                        if buffer:
-                            sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-                            buffer = []
-                        current_section = match.group(1).title()
-                    else:
-                        buffer.append(line)
-                if buffer:
-                    sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+        except Exception as e:
+            skipped.append({"key": item_key, "title": item_title, "reason": str(e)})
 
-                all_keys = list(sections.keys())
-                if max_sections is not None:
-                    sliced_keys = all_keys[start_section:start_section + max_sections]
-                    sections = {k: sections[k] for k in sliced_keys}
-
-                results.append({
-                    "title": item_title,
-                    "key": item_key,
-                    "page_count": len(doc),
-                    "sections": sections,
-                    "note": "Document too large; split by inferred sections. Suggest using max_sections or iterating start_section if needed."
-                })
-
-            except Exception as e:
-                skipped.append({"key": item_key, "title": item_title, "reason": str(e)})
-
-        return {
-            "collection_name": collection_name,
-            "results": results,
-            "skipped": skipped
-        }
-
-    except Exception as e:
-        return {
-            "error": "Collection processing failed",
-            "detail": str(e)
-        }
+    return {
+        "collection_name": collection_name,
+        "results": results,
+        "skipped": skipped
+    }
 
 @router.post("/create_collection")
 def create_collection(user_id: str, api_key: str, name: str):
