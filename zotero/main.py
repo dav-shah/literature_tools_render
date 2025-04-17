@@ -59,35 +59,25 @@ def get_items_by_collection(
             if item["data"].get("itemType") not in ["attachment", "note", "link"]
         ]
     }
-
-@router.get("/zotero/extract_chunks_from_collection")
-def extract_chunks_from_collection(
-    user_id: str,
-    api_key: str,
-    collection_name: str,
-    limit_items: int = 1,
-    start_index: int = 0,
-):
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3",
-    }
-
+    
+@router.get("/extract_chunks_from_collection")
+def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
     try:
-        # Step 1: Get collection key
+        headers = {
+            "Zotero-API-Key": api_key,
+            "Zotero-API-Version": "3"
+        }
+
+        # Fetch collections and get key
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
         collections = collections_resp.json()
-
-        collection_key = next(
-            (c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None
-        )
-
+        collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
-        # Step 2: Get items in collection
+        # Fetch items in collection
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
@@ -96,68 +86,61 @@ def extract_chunks_from_collection(
         extracted_chunks = []
         skipped = []
 
-        items_to_process = items[start_index:start_index + limit_items]
-
-        for item in items_to_process:
+        for item in items[start_index:start_index + limit_items]:
             item_data = item["data"]
             item_key = item_data["key"]
+            item_type = item_data.get("itemType")
+            item_title = item_data.get("title")
 
-            # Skip non-citable items
-            if item_data.get("itemType") in ["attachment", "note", "link"]:
+            # Skip if not a top-level citable item
+            if item_type in ["note", "attachment", "link"]:
                 skipped.append({
                     "key": item_key,
-                    "title": item_data.get("title"),
+                    "title": item_title,
                     "reason": "Non-citable item type",
                     "children_types": []
                 })
                 continue
 
-            try:
-                # Step 3: Check children for a PDF
-                children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
-                children_resp = requests.get(children_url, headers=headers)
-                children_resp.raise_for_status()
-                children = children_resp.json()
+            # Get children (attachments)
+            children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
+            children_resp = requests.get(children_url, headers=headers)
+            children_resp.raise_for_status()
+            children = children_resp.json()
+            child_types = [c["data"].get("itemType") for c in children]
 
-                # Look for any child attachment that is a PDF
-                pdf_attachment = next(
-                    (c for c in children
-                     if c.get("data", {}).get("itemType") == "attachment"
-                     and c.get("data", {}).get("contentType") == "application/pdf"),
-                    None
-                )
-
-                if not pdf_attachment:
-                    skipped.append({
-                        "key": item_key,
-                        "title": item_data.get("title"),
-                        "reason": "No downloadable PDF attachment found.",
-                        "children_types": [c.get("data", {}).get("itemType") for c in children]
-                    })
-                    continue
-
-                # Step 4: Download PDF and extract full text
-                pdf_key = pdf_attachment["data"]["key"]
-                pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
-                pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
-                pdf_resp.raise_for_status()
-
-                doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
-                full_text = "\n".join(page.get_text() for page in doc)
-
-                extracted_chunks.append({
-                    "title": item_data.get("title"),
-                    "key": item_key,
-                    "full_text": full_text
-                })
-
-            except Exception as e:
+            # Look for a PDF
+            pdf = next((c for c in children if c["data"].get("contentType") == "application/pdf"), None)
+            if not pdf:
                 skipped.append({
                     "key": item_key,
-                    "title": item_data.get("title"),
-                    "reason": f"Error processing item: {str(e)}",
-                    "children_types": []
+                    "title": item_title,
+                    "reason": "No downloadable PDF attachment found.",
+                    "children_types": child_types
                 })
+                continue
+
+            # Download and extract PDF text
+            pdf_key = pdf["data"]["key"]
+            pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
+            pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
+            if pdf_resp.status_code != 200:
+                skipped.append({
+                    "key": item_key,
+                    "title": item_title,
+                    "reason": "Failed to download PDF attachment.",
+                    "children_types": child_types
+                })
+                continue
+
+            doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
+            full_text = "\n".join(page.get_text() for page in doc)
+
+            extracted_chunks.append({
+                "title": item_title,
+                "key": item_key,
+                "full_text": full_text
+            })
 
         return {
             "collection_name": collection_name,
