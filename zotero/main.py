@@ -60,16 +60,25 @@ def get_items_by_collection(
         ]
     }
 
-@router.get("/extract_chunks_from_collection")
-def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: str, limit_items: int = 1, start_index: int = 0):
+@router.get("/zotero/extract_chunks_from_collection")
+def extract_chunks_from_collection(
+    user_id: str,
+    api_key: str,
+    collection_name: str,
+    start_index: int = 0
+):
+    headers = {
+        "Zotero-API-Key": api_key,
+        "Zotero-API-Version": "3"
+    }
+
+    section_pattern = re.compile(
+        r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b",
+        re.IGNORECASE
+    )
+
     try:
-        headers = {
-            "Zotero-API-Key": api_key,
-            "Zotero-API-Version": "3"
-        }
-
-        section_pattern = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\\b", re.IGNORECASE)
-
+        # Get collection key
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -78,59 +87,74 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
+        # Get items in collection
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
         items = items_resp.json()
 
-        extracted_chunks = []
-        skipped = []
+        if start_index >= len(items):
+            return {"error": f"Index {start_index} is out of bounds for collection '{collection_name}' with {len(items)} items."}
 
-        for item in items[start_index:start_index + limit_items]:
-            item_data = item["data"]
-            if item_data.get("itemType") in ["attachment", "note", "link"]:
-                continue
+        item = items[start_index]
+        item_data = item["data"]
+        item_key = item_data["key"]
 
-            item_key = item_data["key"]
+        # Get children for the item
+        children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
+        children_resp = requests.get(children_url, headers=headers)
+        children_resp.raise_for_status()
+        children = children_resp.json()
 
-            try:
-                children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
-                children_resp = requests.get(children_url, headers=headers)
-                children_resp.raise_for_status()
-                children = children_resp.json()
+        # Try to find a PDF
+        pdf = next(
+            (c for c in children
+             if c.get("data", {}).get("itemType") == "attachment" and
+             "pdf" in (c.get("data", {}).get("contentType") or "").lower()),
+            None
+        )
 
-                pdf = next(
-                    (c for c in children
-                     if c.get("data", {}).get("itemType") == "attachment" and
-                        c.get("data", {}).get("contentType") == "application/pdf"),
-                    None
-                )
+        if not pdf:
+            return {
+                "collection_name": collection_name,
+                "results": [],
+                "skipped": [{
+                    "key": item_key,
+                    "title": item_data.get("title"),
+                    "reason": "No downloadable PDF attachment found.",
+                    "children_types": [c.get("data", {}).get("contentType") for c in children]
+                }]
+            }
 
-                if pdf:
-                    pdf_key = pdf["data"]["key"]
-                    pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
-                    pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
-                    if pdf_resp.status_code == 200:
-                        doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
-                        full_text = "\n".join(page.get_text() for page in doc)
+        # Try to download the PDF
+        pdf_key = pdf["data"]["key"]
+        pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
+        pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
 
-                        extracted_chunks.append({
-                            "title": item_data.get("title"),
-                            "key": item_key,
-                            "full_text": full_text
-                        })
-                    else:
-                        skipped.append({"key": item_key, "reason": "PDF download failed"})
-                else:
-                    skipped.append({"key": item_key, "reason": "No PDF attachment"})
+        if pdf_resp.status_code != 200:
+            return {
+                "collection_name": collection_name,
+                "results": [],
+                "skipped": [{
+                    "key": item_key,
+                    "title": item_data.get("title"),
+                    "reason": f"PDF download failed (status {pdf_resp.status_code}).",
+                    "children_types": [c.get("data", {}).get("contentType") for c in children]
+                }]
+            }
 
-            except Exception as e:
-                skipped.append({"key": item_key, "reason": str(e)})
+        # Extract full text
+        doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
+        full_text = "\n".join(page.get_text() for page in doc)
 
         return {
             "collection_name": collection_name,
-            "results": extracted_chunks,
-            "skipped": skipped
+            "results": [{
+                "title": item_data.get("title"),
+                "key": item_key,
+                "full_text": full_text
+            }],
+            "skipped": []
         }
 
     except Exception as e:
@@ -138,6 +162,7 @@ def extract_chunks_from_collection(user_id: str, api_key: str, collection_name: 
             "error": "Extraction failed",
             "detail": str(e)
         }
+
 
 
 @router.post("/create_collection")
