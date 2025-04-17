@@ -6,6 +6,7 @@ from io import BytesIO
 import fitz  # PyMuPDF
 import re
 import sys
+from typing import Optional
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
@@ -62,13 +63,15 @@ def get_items_by_collection(
     
 SECTION_PATTERN = re.compile(r"^(abstract|introduction|background|methods|materials and methods|results|findings|discussion|conclusion|references)\b", re.IGNORECASE)
 
-@router.get("/extract_chunks_from_collection")
+@router.get("/zotero/extract_chunks_from_collection")
 def extract_chunks_from_collection(
     user_id: str,
     api_key: str,
     collection_name: str,
     limit_items: int = 1,
-    start_index: int = 0
+    start_index: int = 0,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None
 ):
     try:
         headers = {
@@ -76,7 +79,7 @@ def extract_chunks_from_collection(
             "Zotero-API-Version": "3"
         }
 
-        # Step 1: Get collection key
+        # Get all items in the collection
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -85,76 +88,103 @@ def extract_chunks_from_collection(
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
-        # Step 2: Fetch all items in collection
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
-        items_params = {"limit": 100}
-        all_items_resp = requests.get(items_url, headers=headers, params=items_params)
-        all_items_resp.raise_for_status()
-        all_items = all_items_resp.json()
+        params = {"limit": 100}  # load a reasonable batch to filter parents
+        items_resp = requests.get(items_url, headers=headers, params=params)
+        items_resp.raise_for_status()
+        all_items = items_resp.json()
 
-        # Step 3: Filter parent items
-        parent_items = [item for item in all_items if not item["data"].get("parentItem")]
-        selected_items = parent_items[start_index:start_index + limit_items]
-
-        results = []
+        # Step 1: Filter for parent items only (citable types)
+        parent_items = [item for item in all_items if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"]
+        selected_parents = parent_items[start_index:start_index + limit_items]
+        extracted_chunks = []
         skipped = []
 
-        for parent in selected_items:
+        for parent in selected_parents:
             parent_key = parent["data"]["key"]
             parent_title = parent["data"].get("title")
 
-            # Step 4: Find children
             children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{parent_key}/children"
             children_resp = requests.get(children_url, headers=headers)
             children_resp.raise_for_status()
             children = children_resp.json()
 
-            pdf = next((
-                c for c in children
-                if c.get("data", {}).get("itemType") == "attachment" and
-                   c.get("data", {}).get("contentType") == "application/pdf"
-            ), None)
+            # Find the first PDF attachment
+            pdf = next((c for c in children if c.get("data", {}).get("contentType") == "application/pdf"), None)
 
             if not pdf:
                 skipped.append({
                     "key": parent_key,
                     "title": parent_title,
-                    "reason": "No downloadable PDF attachment found.",
-                    "children_types": [c.get("data", {}).get("itemType") for c in children]
+                    "reason": "No PDF attachment found.",
+                    "children_types": [c["data"].get("itemType") for c in children]
                 })
                 continue
 
             pdf_key = pdf["data"]["key"]
             pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
             pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
-
             if pdf_resp.status_code != 200:
                 skipped.append({
                     "key": parent_key,
                     "title": parent_title,
-                    "reason": f"Failed to download PDF (status {pdf_resp.status_code})",
-                    "children_types": [c.get("data", {}).get("itemType") for c in children]
+                    "reason": "PDF download failed"
                 })
                 continue
 
-            try:
-                doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
-                pages = [page.get_text().strip() for page in doc if page.get_text().strip()]
-                results.append({
-                    "key": parent_key,
+            doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
+
+            # Extract text according to user-specified page range
+            if page_start is not None and page_end is not None:
+                pages = range(page_start - 1, page_end)
+                text = "\n".join(doc[p].get_text() for p in pages if 0 <= p < len(doc))
+                extracted_chunks.append({
                     "title": parent_title,
-                    "pages": pages
+                    "key": parent_key,
+                    "text": text,
+                    "page_range": [page_start, page_end]
                 })
-            except Exception as e:
-                skipped.append({
-                    "key": parent_key,
+                continue
+
+            # Else, return the whole doc if it fits; else try section splitting
+            full_text = "\n".join(page.get_text() for page in doc)
+            if len(full_text) < 40000:
+                extracted_chunks.append({
                     "title": parent_title,
-                    "reason": f"PDF parsing error: {str(e)}"
+                    "key": parent_key,
+                    "text": full_text,
+                    "page_count": len(doc)
+                })
+            else:
+                # Try section-based fallback
+                sections = {}
+                current_section = "Unknown"
+                buffer = []
+
+                for line in full_text.splitlines():
+                    match = SECTION_PATTERN.match(line.strip())
+                    if match:
+                        if buffer:
+                            sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+                            buffer = []
+                        current_section = match.group(1).title()
+                    else:
+                        buffer.append(line)
+
+                if buffer:
+                    sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+
+                extracted_chunks.append({
+                    "title": parent_title,
+                    "key": parent_key,
+                    "page_count": len(doc),
+                    "sections": sections,
+                    "note": "Document too large; split by inferred sections. Suggest passing page range if more control is needed."
                 })
 
         return {
             "collection_name": collection_name,
-            "results": results,
+            "results": extracted_chunks,
             "skipped": skipped
         }
 
