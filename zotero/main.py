@@ -102,19 +102,22 @@ def extract_chunks_from_collection(
     try:
         headers = {"Zotero-API-Key": api_key, "Zotero-API-Version": "3"}
 
+        # Fetch collection key
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
         collections = collections_resp.json()
-        collection_key = next((c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None)
+        collection_key = next(
+            (c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None
+        )
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
+        # Fetch items
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
         all_items = items_resp.json()
-
         parent_items = [
             item for item in all_items
             if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
@@ -129,41 +132,74 @@ def extract_chunks_from_collection(
             item_title = parent["data"].get("title")
 
             try:
+                # Get children
                 children_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{item_key}/children"
                 children_resp = requests.get(children_url, headers=headers)
                 children_resp.raise_for_status()
                 children = children_resp.json()
 
+                # Find PDF attachment
                 pdf = next((
                     c for c in children
                     if c.get("data", {}).get("itemType") == "attachment" and
-                       c.get("data", {}).get("contentType") == "application/pdf"
+                    c.get("data", {}).get("contentType") == "application/pdf"
                 ), None)
 
                 if not pdf:
-                    skipped.append({"key": item_key, "title": item_title, "reason": "No PDF attachment", "children_types": [c["data"].get("itemType") for c in children]})
+                    skipped.append({
+                        "key": item_key,
+                        "title": item_title,
+                        "reason": "No PDF attachment",
+                        "children_types": [c["data"].get("itemType") for c in children]
+                    })
                     continue
 
+                # Try downloading PDF
                 pdf_key = pdf["data"]["key"]
                 pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
                 pdf_resp = requests.get(pdf_url, headers=headers, stream=True)
-                pdf_resp.raise_for_status()
 
+                if pdf_resp.status_code != 200:
+                    skipped.append({
+                        "key": item_key,
+                        "title": item_title,
+                        "reason": f"PDF download failed with status {pdf_resp.status_code}",
+                        "pdf_url": pdf_url
+                    })
+                    continue
+
+                # Extract PDF content
                 doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
                 full_text = "\n".join(page.get_text() for page in doc)
-                sections = extract_sections(full_text)
-                section_keys = list(sections.keys())
 
+                # Parse sections
+                sections = {}
+                current_section = "Unknown"
+                buffer = []
+
+                for line in full_text.splitlines():
+                    match = SECTION_PATTERN.match(line.strip())
+                    if match:
+                        if buffer:
+                            sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+                            buffer = []
+                        current_section = match.group(1).title()
+                    else:
+                        buffer.append(line)
+                if buffer:
+                    sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+
+                all_keys = list(sections.keys())
                 if max_sections is not None:
-                    section_keys = section_keys[start_section:start_section + max_sections]
-                    sections = {k: sections[k] for k in section_keys}
+                    sliced_keys = all_keys[start_section:start_section + max_sections]
+                    sections = {k: sections[k] for k in sliced_keys}
 
                 results.append({
                     "title": item_title,
                     "key": item_key,
                     "page_count": len(doc),
                     "sections": sections,
-                    "note": "One item is processed at a time by default. Section indexing can be used if content is too large."
+                    "note": "Document too large; split by inferred sections. Suggest using max_sections or iterating start_section if needed."
                 })
 
             except Exception as e:
