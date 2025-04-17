@@ -69,6 +69,26 @@ def get_items_by_collection(
         ]
     }
 
+def extract_sections(text: str):
+    sections = {}
+    current_section = "Unknown"
+    buffer = []
+
+    for line in text.splitlines():
+        match = SECTION_PATTERN.match(line.strip())
+        if match:
+            if buffer:
+                sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+                buffer = []
+            current_section = match.group(1).title()
+        else:
+            buffer.append(line)
+
+    if buffer:
+        sections.setdefault(current_section, []).append(" ".join(buffer).strip())
+
+    return sections
+
 @router.get("/zotero/extract_chunks_from_collection")
 def extract_chunks_from_collection(
     user_id: str,
@@ -82,7 +102,6 @@ def extract_chunks_from_collection(
     try:
         headers = {"Zotero-API-Key": api_key, "Zotero-API-Version": "3"}
 
-        # Get collections and resolve collection key
         collections_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections"
         collections_resp = requests.get(collections_url, headers=headers)
         collections_resp.raise_for_status()
@@ -91,7 +110,6 @@ def extract_chunks_from_collection(
         if not collection_key:
             return {"error": f"Collection '{collection_name}' not found."}
 
-        # Get parent items (journal articles only)
         items_url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
         items_resp = requests.get(items_url, headers=headers)
         items_resp.raise_for_status()
@@ -116,12 +134,11 @@ def extract_chunks_from_collection(
                 children_resp.raise_for_status()
                 children = children_resp.json()
 
-                pdf = next(
-                    (c for c in children
-                     if c.get("data", {}).get("itemType") == "attachment" and
-                        c.get("data", {}).get("contentType") == "application/pdf"),
-                    None
-                )
+                pdf = next((
+                    c for c in children
+                    if c.get("data", {}).get("itemType") == "attachment" and
+                       c.get("data", {}).get("contentType") == "application/pdf"
+                ), None)
 
                 if not pdf:
                     skipped.append({"key": item_key, "title": item_title, "reason": "No PDF attachment", "children_types": [c["data"].get("itemType") for c in children]})
@@ -134,35 +151,19 @@ def extract_chunks_from_collection(
 
                 doc = fitz.open(stream=BytesIO(pdf_resp.content), filetype="pdf")
                 full_text = "\n".join(page.get_text() for page in doc)
-
-                sections = {}
-                current_section = "Unknown"
-                buffer = []
-
-                for line in full_text.splitlines():
-                    match = SECTION_PATTERN.match(line.strip())
-                    if match:
-                        if buffer:
-                            sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-                            buffer = []
-                        current_section = match.group(1).title()
-                    else:
-                        buffer.append(line)
-
-                if buffer:
-                    sections.setdefault(current_section, []).append(" ".join(buffer).strip())
-
+                sections = extract_sections(full_text)
                 section_keys = list(sections.keys())
+
                 if max_sections is not None:
-                    sliced_keys = section_keys[start_section:start_section + max_sections]
-                    sections = {k: sections[k] for k in sliced_keys if k in sections}
+                    section_keys = section_keys[start_section:start_section + max_sections]
+                    sections = {k: sections[k] for k in section_keys}
 
                 results.append({
                     "title": item_title,
                     "key": item_key,
                     "page_count": len(doc),
                     "sections": sections,
-                    "note": "Document too large; split by inferred sections. Suggest setting max_sections and using start_section to iterate if needed."
+                    "note": "One item is processed at a time by default. Section indexing can be used if content is too large."
                 })
 
             except Exception as e:
