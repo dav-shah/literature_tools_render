@@ -107,26 +107,34 @@ def extract_chunks_from_collection(
 ):
     headers = {"Zotero-API-Key": api_key, "Zotero-API-Version": "3"}
 
+    log(f"Fetching collections for user {user_id}")
     collections = get_zotero_collections(user_id, api_key)
+    log(f"Found collections: {[c['data']['name'] for c in collections]}")
     collection_key = next(
         (c["data"]["key"] for c in collections if c["data"]["name"] == collection_name), None
     )
     if not collection_key:
+        log(f"Collection '{collection_name}' not found.")
         return {"error": f"Collection '{collection_name}' not found."}
 
+    log(f"Fetching items from collection key: {collection_key}")
     all_items = get_zotero_items(user_id, api_key, collection_key)
+    log(f"Total items fetched: {len(all_items)}")
     parent_items = [
         item for item in all_items
         if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
     ]
 
     selected_parents = parent_items[start_index:start_index + limit_items]
+    log(f"Selected {len(selected_parents)} parent items for extraction")
+
     results = []
     skipped = []
 
     for parent in selected_parents:
         item_key = parent["data"]["key"]
         item_title = parent["data"].get("title")
+        log(f"Processing item: {item_title} (key: {item_key})")
 
         try:
             children = get_children(user_id, api_key, item_key)
@@ -137,24 +145,27 @@ def extract_chunks_from_collection(
             ), None)
 
             if not pdf:
+                log(f"No PDF attachment found for item {item_key}")
                 skipped.append({"key": item_key, "title": item_title, "reason": "No PDF attachment"})
                 continue
 
             pdf_key = pdf["data"]["key"]
             pdf_url = f"{ZOTERO_API_BASE}/users/{user_id}/items/{pdf_key}/file"
+            log(f"Downloading PDF from {pdf_url}")
             resp = requests.get(pdf_url, headers=headers, stream=True)
             resp.raise_for_status()
 
             doc = fitz.open(stream=BytesIO(resp.content), filetype="pdf")
             page_count = len(doc)
+            log(f"PDF has {page_count} pages")
 
-            # Clip page range to bounds
             page_start_clamped = max(1, page_start)
             page_end_clamped = min(page_end or page_count, page_count)
 
             full_text = "\n".join(
                 doc[i - 1].get_text() for i in range(page_start_clamped, page_end_clamped + 1)
             )
+            log(f"Extracted {len(full_text)} characters of text")
 
             results.append({
                 "title": item_title,
@@ -165,6 +176,7 @@ def extract_chunks_from_collection(
             })
 
         except Exception as e:
+            log(f"Error processing item {item_key}: {e}")
             skipped.append({"key": item_key, "title": item_title, "reason": str(e)})
 
     return {
