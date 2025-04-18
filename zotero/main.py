@@ -122,18 +122,19 @@ def extract_chunks_from_collection(
     log(f"Total items fetched: {len(all_items)}")
     for item in all_items:
         log(f"Item key: {item['data'].get('key')}, title: {item['data'].get('title')}, type: {item['data'].get('itemType')}, has parent: {bool(item['data'].get('parentItem'))}")
-    parent_items = [
+    journal_articles = [
         item for item in all_items
-        if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
+        if item["data"].get("itemType") == "journalArticle"
     ]
+    log(f"Total journalArticles (regardless of parent status): {len(journal_articles)}")
 
-    selected_parents = parent_items[start_index:start_index + limit_items]
-    log(f"Selected {len(selected_parents)} parent items for extraction")
+    selected_articles = journal_articles[start_index:start_index + limit_items]
+    log(f"Selected {len(selected_articles)} journalArticle items for extraction")
 
     results = []
     skipped = []
 
-    for parent in selected_parents:
+    for parent in selected_articles:
         item_key = parent["data"]["key"]
         item_title = parent["data"].get("title")
         log(f"Processing item: {item_title} (key: {item_key})")
