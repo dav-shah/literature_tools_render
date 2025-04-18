@@ -120,6 +120,8 @@ def extract_chunks_from_collection(
     log(f"Fetching items from collection key: {collection_key}")
     all_items = get_zotero_items(user_id, api_key, collection_key)
     log(f"Total items fetched: {len(all_items)}")
+    for item in all_items:
+        log(f"Item key: {item['data'].get('key')}, title: {item['data'].get('title')}, type: {item['data'].get('itemType')}, has parent: {bool(item['data'].get('parentItem'))}")
     parent_items = [
         item for item in all_items
         if not item["data"].get("parentItem") and item["data"].get("itemType") == "journalArticle"
