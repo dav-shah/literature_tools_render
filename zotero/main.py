@@ -83,10 +83,22 @@ def get_zotero_collections(user_id: str, api_key: str):
 
 def get_zotero_items(user_id: str, api_key: str, collection_key: str):
     headers = {"Zotero-API-Key": api_key}
-    url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
-    return resp.json()
+    all_items = []
+    start = 0
+    limit = 100
+
+    while True:
+        url = f"{ZOTERO_API_BASE}/users/{user_id}/collections/{collection_key}/items"
+        params = {"limit": limit, "start": start}
+        resp = requests.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        batch = resp.json()
+        if not batch:
+            break
+        all_items.extend(batch)
+        start += limit
+
+    return all_items
 
 def get_children(user_id: str, api_key: str, item_key: str):
     headers = {"Zotero-API-Key": api_key}
