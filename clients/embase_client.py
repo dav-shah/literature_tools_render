@@ -3,7 +3,7 @@ import requests
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv(dotenv_path="lit_tools.env")
+load_dotenv(dotenv_path=".env")
 
 API_KEY = os.getenv("ELSEVIER_API_KEY")
 BASE_URL = "https://api.elsevier.com/content/search/scopus"
