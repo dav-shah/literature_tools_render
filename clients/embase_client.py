@@ -97,3 +97,38 @@ def fetch_full_text_by_doi(doi: str, para_start: int = 1, para_end: int = None):
             fallback_response["first_paragraph"] = None
 
         return fallback_response
+        
+def search_sciencedirect(query: str, count: int = 10, start: int = 0):
+    headers = {
+        "X-ELS-APIKey": API_KEY,
+        "Accept": "application/json"
+    }
+    url = "https://api.elsevier.com/content/search/sciencedirect"
+    params = {
+        "query": query,
+        "count": count,
+        "start": start
+    }
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return parse_sciencedirect_results(response.json())
+
+def parse_sciencedirect_results(data):
+    entries = data.get("search-results", {}).get("entry", [])
+    parsed = []
+
+    for entry in entries:
+        parsed.append({
+            "source": "sciencedirect",
+            "title": entry.get("dc:title"),
+            "doi": entry.get("prism:doi"),
+            "authors": entry.get("dc:creator"),
+            "journal": entry.get("prism:publicationName"),
+            "publication_date": entry.get("prism:coverDate"),
+            "url": entry.get("prism:url"),
+            "eid": entry.get("eid"),
+            "openaccess": entry.get("openaccessFlag"),
+            "link_to_fulltext": next((link["@href"] for link in entry.get("link", []) if link.get("@ref") == "full-text"), None)
+        })
+
+    return parsed
