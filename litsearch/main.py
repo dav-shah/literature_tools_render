@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi import Query
 from clients.pubmed_client import search_pubmed, fetch_pubmed_details
 import logging
 
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/search")
-def multi_database_search(query: str, databases: list[str] = ["pubmed"], retmax: int = 10):
+def multi_database_search(query: str, databases: list[str] = Query(default=["pubmed"]), retmax: int = 10):
     logger.info(f"Received search query: '{query}' | Databases: {databases}")
     all_results = []
 
