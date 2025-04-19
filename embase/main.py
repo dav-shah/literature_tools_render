@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Query
-from clients.embase_client import search_embase, fetch_full_text_by_doi
+from clients.embase_client import search_scopus, fetch_full_text_by_doi
 
 router = APIRouter()
 
 @router.get("/embase/search")
-def embase_search(
+def scopus_search(
     query: str,
     count: int = 10,
     start: int = 0  # pagination offset
 ):
-    results = search_embase(query, count=count, start=start)
+    results = search_scopus(query, count=count, start=start)
     return {"results": results}
 
 @router.get("/fulltext_by_doi")

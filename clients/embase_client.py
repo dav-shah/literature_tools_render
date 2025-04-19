@@ -8,7 +8,7 @@ load_dotenv(dotenv_path=".env")
 API_KEY = os.getenv("ELSEVIER_API_KEY")
 BASE_URL = "https://api.elsevier.com/content/search/scopus"
 
-def search_embase(query: str, count: int = 10, start: int = 0):
+def search_scopus(query: str, count: int = 10, start: int = 0):
     headers = {
         "X-ELS-APIKey": API_KEY,
         "Accept": "application/json"
@@ -20,15 +20,15 @@ def search_embase(query: str, count: int = 10, start: int = 0):
     }
     response = requests.get(BASE_URL, headers=headers, params=params)
     response.raise_for_status()
-    return parse_embase_results(response.json())
+    return parse_scopus_results(response.json())
 
-def parse_embase_results(data):
+def parse_scopus_results(data):
     entries = data.get("search-results", {}).get("entry", [])
     parsed = []
 
     for entry in entries:
         parsed.append({
-            "source": "embase",
+            "source": "scopus",
             "title": entry.get("dc:title"),
             "doi": entry.get("prism:doi"),
             "authors": entry.get("dc:creator"),  # optional: split into list if comma-separated
