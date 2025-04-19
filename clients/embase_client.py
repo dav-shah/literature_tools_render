@@ -28,13 +28,18 @@ def parse_embase_results(data):
 
     for entry in entries:
         parsed.append({
+            "source": "embase",
             "title": entry.get("dc:title"),
             "doi": entry.get("prism:doi"),
-            "authors": entry.get("dc:creator"),
+            "authors": entry.get("dc:creator"),  # optional: split into list if comma-separated
             "journal": entry.get("prism:publicationName"),
-            "url": entry.get("prism:url"),
+            "publication_date": entry.get("prism:coverDate"),
+            "url": entry.get("prism:url"),  # Scopus API link
+            "eid": entry.get("eid"),
             "openaccess": entry.get("openaccessFlag"),
-            "eid": entry.get("eid")
+            "link_to_scopus": next((link["@href"] for link in entry.get("link", []) if link.get("@ref") == "scopus"), None),
+            "link_to_citedby": next((link["@href"] for link in entry.get("link", []) if link.get("@ref") == "scopus-citedby"), None),
+            "link_to_fulltext": next((link["@href"] for link in entry.get("link", []) if link.get("@ref") == "full-text"), None),
         })
 
     return parsed
