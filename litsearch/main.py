@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi import Query
 from clients.pubmed_client import search_pubmed, fetch_pubmed_details
+from clients.embase_client import search_embase
 import logging
 
 # Set up basic logging
@@ -20,7 +21,10 @@ def multi_database_search(query: str, databases: list[str] = Query(default=["pub
         logger.info(f"PubMed returned {len(results)} results.")
         all_results.extend(results)
 
-    # Add more databases here later
+    if "embase" in databases:
+        embase_results = search_embase(query, count=retmax)
+        logger.info(f"Embase returned {len(embase_results)} results.")
+        all_results.extend(embase_results)
 
     logger.info(f"Total combined results: {len(all_results)}")
     return {

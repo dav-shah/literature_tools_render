@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pubmed.main import router as pubmed_router
+from embase.main import router as embase_router
 from zotero.main import router as zotero_router
 from litsearch.main import router as litsearch_router
 import logging
@@ -14,6 +15,8 @@ app = FastAPI(title="Literature Tools API", version="1.0.0")
 # Include routes
 app.include_router(pubmed_router, prefix="/pubmed", tags=["PubMed"])
 logger.info("Registered PubMed routes at /pubmed")
+app.include_router(embase_router, prefix="/embase", tags=["Embase"])
+logger.info("Registered Embase routes at /embase")
 app.include_router(zotero_router, prefix="/zotero", tags=["Zotero"])
 logger.info("Registered Zotero routes at /zotero")
 app.include_router(litsearch_router, prefix="/litsearch", tags=["LitSearch"])  # NEW
