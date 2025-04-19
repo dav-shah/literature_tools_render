@@ -1,6 +1,11 @@
 from fastapi import APIRouter, Query
 import requests
 import xml.etree.ElementTree as ET
+import logging
+
+# Set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -25,6 +30,7 @@ def search_pubmed(query: str, retmax: int = 10):
             "link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
         } for pmid in id_list
     ]
+    logger.info(f"Search query: {query} | Returned {len(results)} PMIDs")
     return results
 
 @router.get("/summary")
@@ -51,6 +57,7 @@ def get_summary(pmids: list[str] = Query(...)):
                 "pubdate": doc.get("pubdate"),
                 "link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
             })
+    logger.info(f"Summarizing PMIDs: {pmids} | Returned {len(summaries)} summaries")
     return summaries
 
 @router.get("/fetch")
@@ -110,4 +117,5 @@ def fetch_pubmed_details(pmids: list[str] = Query(...)):
             "link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
         })
 
+    logger.info(f"Fetched details for PMIDs: {pmids} | Returned {len(results)} articles")
     return results

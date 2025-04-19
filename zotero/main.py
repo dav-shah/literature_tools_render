@@ -6,7 +6,12 @@ from io import BytesIO
 import fitz  # PyMuPDF
 import re
 import sys
+import logging
 from typing import Optional
+
+# Set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ZOTERO_API_BASE = "https://api.zotero.org"
@@ -234,6 +239,7 @@ def add_pubmed_article(
     pmid: str,
     collection_name: str = "LitReviewGPT"
 ):
+    logger.info(f"Fetching metadata for PMID: {pmid}")
     # Step 1: Fetch article metadata from PubMed
     efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
@@ -248,6 +254,7 @@ def add_pubmed_article(
     
     # Basic fields
     title = article.findtext(".//ArticleTitle")
+    logger.info(f"Fetched title: {title}")
     abstract = " ".join(
         elem.text.strip() for elem in article.findall(".//AbstractText") if elem.text
     )
@@ -276,6 +283,7 @@ def add_pubmed_article(
             })
 
     # Step 2: Ensure collection exists
+    logger.info(f"Ensuring collection '{collection_name}' exists")
     headers = {
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": "3"
@@ -294,6 +302,7 @@ def add_pubmed_article(
         )
         create_resp.raise_for_status()
         collection_key = list(create_resp.json()["successful"].values())[0]["key"]
+        logger.info(f"Created collection '{collection_name}' with key: {collection_key}")
 
     # Step 3: Construct Zotero item
     item_payload = [
@@ -314,6 +323,7 @@ def add_pubmed_article(
             }
         }
     ]
+    logger.info(f"Posting item to Zotero: {title}")
     item_url = f"{ZOTERO_API_BASE}/users/{user_id}/items"
     item_resp = requests.post(
         item_url,
@@ -321,6 +331,7 @@ def add_pubmed_article(
         json=item_payload
     )
     item_resp.raise_for_status()
+    logger.info(f"Successfully added PMID {pmid} to Zotero collection '{collection_name}'")
 
     return {
         "message": "PubMed article added to Zotero successfully.",
